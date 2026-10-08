@@ -2118,3 +2118,183 @@ public class MaHoaCaesar {
 }
 
 
+// SOCKETCHANNEL
+package javaapplication2;
+
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
+
+public class FrameClient {
+
+    // Đọc đủ n byte vào buffer, lặp đến khi đầy
+    static void readFully(SocketChannel ch, ByteBuffer buf) throws Exception {
+        while (buf.hasRemaining()) {
+            if (ch.read(buf) == -1) {
+                throw new java.io.EOFException("Server đóng kết nối sớm");
+            }
+        }
+    }
+
+    // Ghi hết buffer
+    static void writeFully(SocketChannel ch, ByteBuffer buf) throws Exception {
+        while (buf.hasRemaining()) {
+            ch.write(buf);
+        }
+    }
+
+    // Gửi 1 frame: 4 byte độ dài (big-endian mặc định) + payload UTF-8
+    static void sendFrame(SocketChannel ch, String msg) throws Exception {
+        byte[] payload = msg.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buf = ByteBuffer.allocate(4 + payload.length);
+        buf.putInt(payload.length);
+        buf.put(payload);
+        buf.flip();
+        writeFully(ch, buf);
+    }
+
+    // Nhận 1 frame: đọc đủ 4 byte độ dài, rồi đọc đủ payload
+    static String recvFrame(SocketChannel ch) throws Exception {
+        ByteBuffer lenBuf = ByteBuffer.allocate(4);
+        readFully(ch, lenBuf);
+        lenBuf.flip();
+        int length = lenBuf.getInt();
+
+        ByteBuffer body = ByteBuffer.allocate(length);
+        readFully(ch, body);
+        return new String(body.array(), 0, length, StandardCharsets.UTF_8);
+    }
+
+    public static void main(String[] args) {
+        String ipHost = "36.50.135.242";
+        String qCode = "BKi9gnA6";      // thay bằng mã câu hỏi thật của bạn
+        String stuCode = "B23DCCN870";
+        int port = 2211;
+
+        try (SocketChannel ch = SocketChannel.open()) {
+            ch.socket().connect(new InetSocketAddress(ipHost, port), 5000);
+            ch.socket().setSoTimeout(5000);   // lưu ý: không áp dụng cho channel, xem ghi chú bên dưới
+
+            // a. Gửi studentCode;qCode
+            sendFrame(ch, stuCode + ";" + qCode);
+
+            // b. Nhận đúng 3 frame, nối theo thứ tự
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 3; i++) {
+                sb.append(recvFrame(ch));
+            }
+            String request = sb.toString();
+            System.out.println("HTTP request:\n" + request);
+
+            // c. Trích xuất METHOD;PATH;HOST
+            String[] lines = request.split("\r\n");
+            String[] first = lines[0].trim().split("\\s+");
+            String method = first[0];
+            String path = first[1];          // đã gồm query-string nếu có
+
+            String host = "";
+            for (String line : lines) {
+                if (line.toLowerCase().startsWith("host:")) {
+                    host = line.substring(5).trim();
+                    break;
+                }
+            }
+
+            String result = method + ";" + path + ";" + host;
+            System.out.println("Gửi: " + result);
+            sendFrame(ch, result);
+
+            // d. try-with-resources tự đóng channel
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+// Chuoỗi nối lại là JSON
+package javaapplication2;
+
+import java.io.EOFException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class JsonFrameClient {
+
+    static void readFully(SocketChannel ch, ByteBuffer buf) throws Exception {
+        while (buf.hasRemaining()) {
+            if (ch.read(buf) == -1) {
+                throw new EOFException("Server đóng kết nối sớm");
+            }
+        }
+    }
+
+    static void writeFully(SocketChannel ch, ByteBuffer buf) throws Exception {
+        while (buf.hasRemaining()) {
+            ch.write(buf);
+        }
+    }
+
+    static void sendFrame(SocketChannel ch, String msg) throws Exception {
+        byte[] payload = msg.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buf = ByteBuffer.allocate(4 + payload.length);
+        buf.putInt(payload.length);
+        buf.put(payload);
+        buf.flip();
+        writeFully(ch, buf);
+    }
+
+    static String recvFrame(SocketChannel ch) throws Exception {
+        ByteBuffer lenBuf = ByteBuffer.allocate(4);
+        readFully(ch, lenBuf);
+        lenBuf.flip();
+        int length = lenBuf.getInt();
+
+        ByteBuffer body = ByteBuffer.allocate(length);
+        readFully(ch, body);
+        return new String(body.array(), 0, length, StandardCharsets.UTF_8);
+    }
+
+    // Lấy giá trị của một trường: hỗ trợ chuỗi "..." , true/false, số
+    static String getField(String json, String key) {
+        Pattern p = Pattern.compile("\"" + key + "\"\\s*:\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|true|false|[-0-9.]+)");
+        Matcher m = p.matcher(json);
+        if (!m.find()) return "";
+        return m.group(2) != null ? m.group(2) : m.group(1);
+    }
+
+    public static void main(String[] args) {
+        String ipHost = "36.50.135.242";
+        String qCode = "ucpQ9zAh";      // thay bằng mã câu hỏi thật của bạn
+        String stuCode = "B23DCCN870";
+        int port = 2211;
+
+        try (SocketChannel ch = SocketChannel.open()) {
+            ch.socket().connect(new InetSocketAddress(ipHost, port), 5000);
+
+            // a. Gửi studentCode;qCode (đóng frame)
+            sendFrame(ch, stuCode + ";" + qCode);
+
+            // b. Nhận đúng 2 frame, nối theo thứ tự
+            String json = recvFrame(ch) + recvFrame(ch);
+            System.out.println("JSON: " + json);
+
+            // c. Trích xuất event, user, ok
+            String event = getField(json, "event");
+            String user = getField(json, "user");
+            String okRaw = getField(json, "ok");
+            int ok = okRaw.equals("true") ? 1 : 0;
+
+            String result = "event=" + event + ";user=" + user + ";ok=" + ok;
+            System.out.println("Gửi: " + result);
+            sendFrame(ch, result);
+
+            // d. try-with-resources tự đóng channel
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
